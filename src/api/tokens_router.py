@@ -88,3 +88,13 @@ def refresh_token(mint_address: str):
         "token": token,
         "scores": score
     }
+@router.get("/scored")
+def list_scored_tokens():
+    result = (
+        supabase.table("tokens")
+        .select("mint_address, symbol, name, price, composite_score")
+        .order("composite_score", desc=True)
+        .execute()
+    )
+
+    return result.data
