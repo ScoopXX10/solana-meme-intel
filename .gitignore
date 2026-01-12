@@ -1,1 +1,44 @@
+# Python __pycache__ files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# OS / editor artifacts
+.vscode/
+.DS_Store
+*.log
+
+# Environment Variables
 .env
+
+# Supabase cached files (if any)
+supabase/.temp/
+
+# Bytecode
+*.egg-info/
+build/
+dist/
+
+# Node.js / Frontend
+node_modules/
+.next/
+out/
+frontend/.env.local
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+
+# Duplicate project folder
+solana-meme-intel/

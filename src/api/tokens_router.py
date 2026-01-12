@@ -12,6 +12,18 @@ def list_tokens():
     return result.data
 
 
+@router.get("/scored")
+def list_scored_tokens():
+    """List all tokens ordered by composite score (descending)."""
+    result = (
+        supabase.table("tokens")
+        .select("*")
+        .order("composite_score", desc=True)
+        .execute()
+    )
+    return result.data
+
+
 @router.get("/{mint_address}")
 def get_token(mint_address: str):
     result = (
@@ -88,13 +100,3 @@ def refresh_token(mint_address: str):
         "token": token,
         "scores": score
     }
-@router.get("/scored")
-def list_scored_tokens():
-    result = (
-        supabase.table("tokens")
-        .select("mint_address, symbol, name, price, composite_score")
-        .order("composite_score", desc=True)
-        .execute()
-    )
-
-    return result.data
