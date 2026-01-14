@@ -1,5 +1,5 @@
 """
-Token data updater - fetches price, liquidity, and metadata from external APIs.
+Token data updater - fetches price, liquidity, metadata, and on-chain scoring data.
 """
 import logging
 from typing import Dict, Any, Optional, Tuple
@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, Tuple
 from src.utils.http_client import APIClient
 from src.utils.supabase_client import supabase
 from src.utils.helius_client import HELIUS_API_KEY
+from src.ingestion.onchain_data import fetch_all_scoring_data
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,13 @@ def get_metadata(mint: str) -> Dict[str, Any]:
         return default
 
 
-def update_single_token(mint_address: str) -> Dict[str, Any]:
+def update_single_token(mint_address: str, fetch_scoring_data: bool = True) -> Dict[str, Any]:
     """
     Update a single token's data from external APIs and save to database.
 
     Args:
         mint_address: Token mint address
+        fetch_scoring_data: Whether to also fetch on-chain data for scoring
 
     Returns:
         Dict with update status and data
@@ -108,6 +110,7 @@ def update_single_token(mint_address: str) -> Dict[str, Any]:
         "success": False,
         "price_updated": False,
         "metadata_updated": False,
+        "scoring_data_updated": False,
         "data": {},
         "error": None,
     }
@@ -135,6 +138,36 @@ def update_single_token(mint_address: str) -> Dict[str, Any]:
         if meta["holders"]:
             update_payload["holder_count"] = meta["holders"]
 
+        # Fetch on-chain scoring data (authority status, holder distribution)
+        if fetch_scoring_data:
+            try:
+                scoring_data = fetch_all_scoring_data(mint_address)
+
+                # Add scoring data to update payload
+                update_payload["mint_auth"] = scoring_data["mint_auth"]
+                update_payload["freeze_auth"] = scoring_data["freeze_auth"]
+                update_payload["top10_pct"] = scoring_data["top10_pct"]
+                update_payload["whale_count"] = scoring_data["whale_count"]
+
+                # Use on-chain holder count if we got it
+                if scoring_data["holder_count"] > 0:
+                    update_payload["holder_count"] = scoring_data["holder_count"]
+
+                result["scoring_data_updated"] = True
+                result["data"]["scoring"] = scoring_data
+
+                logger.info(
+                    f"Scoring data for {mint_address[:8]}...: "
+                    f"mint_auth={scoring_data['mint_auth']}, "
+                    f"freeze_auth={scoring_data['freeze_auth']}, "
+                    f"top10={scoring_data['top10_pct']:.1f}%, "
+                    f"whales={scoring_data['whale_count']}"
+                )
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch scoring data for {mint_address}: {e}")
+                # Continue without scoring data - price/metadata still valuable
+
         # Only update if we have data
         if update_payload:
             update_payload["updated"] = "now()"
@@ -145,7 +178,7 @@ def update_single_token(mint_address: str) -> Dict[str, Any]:
                 .execute()
 
             result["success"] = True
-            result["data"] = update_payload
+            result["data"]["update_payload"] = update_payload
             logger.info(f"Updated {mint_address[:8]}...: price=${price}, liq=${liquidity}")
         else:
             logger.warning(f"No data to update for {mint_address}")
@@ -157,41 +190,54 @@ def update_single_token(mint_address: str) -> Dict[str, Any]:
     return result
 
 
-def get_token_authorities(mint: str) -> Dict[str, str]:
+def update_token_scoring_data_only(mint_address: str) -> Dict[str, Any]:
     """
-    Get mint and freeze authority status from on-chain data.
+    Update only the on-chain scoring data for a token (authority, holders).
+    Use this for batch updates when you don't need price refresh.
 
     Args:
-        mint: Token mint address
+        mint_address: Token mint address
 
     Returns:
-        Dict with mint_auth and freeze_auth status
+        Dict with update status
     """
-    from src.utils.helius_client import helius_rpc
+    logger.info(f"Fetching scoring data for: {mint_address[:12]}...")
 
-    default = {"mint_auth": "unknown", "freeze_auth": "unknown"}
+    result = {
+        "mint_address": mint_address,
+        "success": False,
+        "data": {},
+        "error": None,
+    }
 
     try:
-        result = helius_rpc("getAccountInfo", [mint, {"encoding": "jsonParsed"}])
+        scoring_data = fetch_all_scoring_data(mint_address)
 
-        if not result or "value" not in result or result["value"] is None:
-            return default
-
-        data = result["value"].get("data", {})
-        if not isinstance(data, dict):
-            return default
-
-        parsed = data.get("parsed", {})
-        info = parsed.get("info", {})
-
-        mint_auth = info.get("mintAuthority")
-        freeze_auth = info.get("freezeAuthority")
-
-        return {
-            "mint_auth": "renounced" if mint_auth is None else "active",
-            "freeze_auth": "renounced" if freeze_auth is None else "active",
+        update_payload = {
+            "mint_auth": scoring_data["mint_auth"],
+            "freeze_auth": scoring_data["freeze_auth"],
+            "holder_count": scoring_data["holder_count"],
+            "top10_pct": scoring_data["top10_pct"],
+            "whale_count": scoring_data["whale_count"],
+            "updated": "now()",
         }
 
+        supabase.table("tokens")\
+            .update(update_payload)\
+            .eq("mint_address", mint_address)\
+            .execute()
+
+        result["success"] = True
+        result["data"] = scoring_data
+
+        logger.info(
+            f"Updated scoring data for {mint_address[:8]}...: "
+            f"mint={scoring_data['mint_auth']}, freeze={scoring_data['freeze_auth']}, "
+            f"holders={scoring_data['holder_count']}, top10={scoring_data['top10_pct']:.1f}%"
+        )
+
     except Exception as e:
-        logger.error(f"Failed to get authorities for {mint}: {e}")
-        return default
+        result["error"] = str(e)
+        logger.error(f"Failed to update scoring data for {mint_address}: {e}")
+
+    return result
